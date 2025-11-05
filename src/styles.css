@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global tokens via CSS variables (fine-tuned later if needed) */
+:root {
+  --ring: rgba(34, 211, 238, 0.6);
+}
+
+* { outline-color: var(--ring); }
+
+/* Glass card helper */
+.glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+/* Shimmer header text */
+.shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.65), rgba(255,255,255,0.25), rgba(255,255,255,0.65));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.4s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: 0 0; }
+}
+
+/* Subtle sparkle dot */
+.sparkle-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 9999px;
+  background: rgba(255,255,255,0.4);
+  box-shadow:
+    0 0 6px rgba(139,92,246,0.5),
+    0 0 12px rgba(34,211,238,0.4);
+}
+/* --- Step 6: Inline highlight classes --- */
+.hl-supported {
+  background: rgba(52, 211, 153, 0.18);
+  border-bottom: 2px solid #34D399;
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.35) inset;
+  padding: 0 2px;
+  border-radius: 0.25rem;
+}
+
+.hl-unknown, .hl-pending {
+  background: rgba(245, 158, 11, 0.16);
+  border-bottom: 2px solid #F59E0B;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.28) inset;
+  padding: 0 2px;
+  border-radius: 0.25rem;
+}
+
+/* Glow on target chunk when jumping from citation chip */
+@keyframes chunkFlash {
+  0% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.0); }
+  30% { box-shadow: 0 0 18px 2px rgba(34, 211, 238, 0.6); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.0); }
+}
+.chunk-glow {
+  outline: 2px solid #22D3EE;
+  animation: chunkFlash 1.2s ease-in-out 1;
+  border-color: rgba(34, 211, 238, 0.7) !important;
+}
