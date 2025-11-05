@@ -3,107 +3,103 @@ import * as React from "react";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { useToast } from "./ui/use-toast";
+
 import type { Claim } from "../lib/claims";
 import type { EvidenceItem } from "../lib/retrieval";
-import { generateFixDraft } from "../lib/fix";
+import { generateFixDraft, type FixResult } from "../lib/fix";
 
-type Status = "supported" | "unknown" | "pending";
-
-export default function FixDraft({
-  answer,
-  claims,
-  statuses,
-  evidenceByClaim,
-  onDraftReady,
-}: {
+type Props = {
   answer: string;
   claims: Claim[];
-  statuses: Record<string, Status>;
-  evidenceByClaim: Record<string, EvidenceItem[] | undefined>;
+  statuses: Record<string, "supported" | "unknown" | "pending">;
+  evidenceByClaim: Record<string, EvidenceItem[]>;
+  /** Called with the final draft text (string) once generated */
   onDraftReady?: (text: string) => void;
-}) {
+};
+
+export default function FixDraft(props: Props) {
   const { push } = useToast();
-  const [useWebLLM, setUseWebLLM] = React.useState(false);
-  const [running, setRunning] = React.useState(false);
-  const [statusMsg, setStatusMsg] = React.useState("");
-  const [draft, setDraft] = React.useState("");
+
+  const [loading, setLoading] = React.useState(false);
+  const [result, setResult] = React.useState<FixResult | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
 
   async function onGenerate() {
-    if (!answer.trim()) {
-      push({ title: "No answer", description: "Paste an answer in the editor first." });
+    if (!props.answer.trim()) {
+      push({ title: "Nothing to rewrite", description: "Paste an answer on the left first." });
       return;
     }
-    if (claims.length === 0) {
-      push({ title: "No claims", description: "Extract claims before generating a fix." });
+    if (props.claims.length === 0) {
+      push({ title: "No claims", description: "Click Extract Claims before generating a draft." });
       return;
     }
-    setRunning(true);
-    setDraft("");
+    setLoading(true);
+    setError(null);
+    setResult(null);
     try {
-      const text = await generateFixDraft(answer, claims, statuses, evidenceByClaim, {
-        useWebLLM,
-        onStatus: setStatusMsg,
+      const r = await generateFixDraft({
+        answer: props.answer,
+        claims: props.claims,
+        statuses: props.statuses,
+        evidenceByClaim: props.evidenceByClaim,
       });
-      setDraft(text);
-      onDraftReady?.(text);
-      push({ title: "Fix draft ready", description: useWebLLM ? "WebLLM or fallback used." : "Template mode." });
-    } catch (err: any) {
-      console.error(err);
-      push({ title: "Fix generation error", description: String(err?.message || err) });
+      setResult(r);
+      props.onDraftReady?.(r.draft);
+      push({
+        title: "Fix draft ready",
+        description: r.used === "webllm" ? "Generated via WebLLM (on-device)." : "Generated via template mode.",
+      });
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      setError(msg);
+      push({ title: "Draft error", description: msg });
     } finally {
-      setRunning(false);
-      setStatusMsg("");
+      setLoading(false);
     }
   }
 
   async function onCopy() {
+    if (!result?.draft) return;
     try {
-      await navigator.clipboard.writeText(draft || "");
-      push({ title: "Copied", description: "Draft copied to clipboard." });
+      await navigator.clipboard.writeText(result.draft);
+      push({ title: "Copied", description: "Fix draft copied to clipboard." });
     } catch {
-      push({ title: "Copy failed", description: "Select and copy manually." });
+      push({ title: "Copy failed", description: "Your browser blocked clipboard access." });
     }
   }
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-3">
-        <Button onClick={onGenerate} disabled={running}>
-          {running ? "Generating…" : "Generate Fix Draft"}
+      <div className="flex items-center gap-2">
+        <Button onClick={onGenerate} disabled={loading}>
+          {loading ? "Generating…" : "Generate Fix Draft"}
         </Button>
-        <label className="inline-flex items-center gap-2 text-xs text-muted">
-          <input
-            type="checkbox"
-            className="accent-accentCyan"
-            checked={useWebLLM}
-            onChange={(e) => setUseWebLLM(e.target.checked)}
-          />
-          Try WebLLM (experimental)
-        </label>
-        {statusMsg && <span className="text-xs text-muted">{statusMsg}</span>}
+        {result?.used && (
+          <Badge intent={result.used === "webllm" ? "info" : "warn"}>
+            {result.used === "webllm" ? "WebLLM" : "Template"}
+          </Badge>
+        )}
       </div>
 
-      {!draft && (
-        <div className="text-xs text-muted">
-          Output will appear here. If WebLLM can’t load, we’ll use a safe template rewrite.
+      {error && (
+        <div className="mt-2 text-xs text-red-300">
+          {error}
         </div>
       )}
 
-      {draft && (
-        <>
-          <div className="mb-2">
-            <Badge intent="info">Draft</Badge>
+      <div className="mt-3 rounded-xl bg-black/30 border border-white/10 p-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-semibold">Draft</div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={onCopy} disabled={!result?.draft}>
+              Copy Draft
+            </Button>
           </div>
-          <textarea
-            className="w-full min-h-[200px] rounded-xl bg-black/30 border border-white/10 p-3 text-sm"
-            value={draft}
-            readOnly
-          />
-          <div className="mt-2">
-            <Button variant="outline" onClick={onCopy}>Copy Draft</Button>
-          </div>
-        </>
-      )}
+        </div>
+        <div className="text-sm leading-relaxed whitespace-pre-wrap min-h-[120px]">
+          {result?.draft || "Click “Generate Fix Draft” to produce a grounded revision here."}
+        </div>
+      </div>
     </div>
   );
 }
