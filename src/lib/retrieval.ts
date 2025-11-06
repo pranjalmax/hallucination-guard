@@ -1,124 +1,113 @@
 // src/lib/retrieval.ts
-// Evidence retrieval + scoring with friendly thresholds.
-// Now tolerant to both named AND default exports from vectorStore.
 
 import { embedText } from "./embeddings";
-import * as VS from "./vectorStore";
+import { getVectorsByDocId, type VectorRecord } from "./vectorStore";
+import { scoreEvidence, type EvidenceLabel } from "./scoring";
 
-/** Looser thresholds for small docs / single-chunk cases */
-export const SIM_SUPPORT = 0.27;            // cosine similarity 0..1
-export const OVERLAP_SUPPORT = 0.08;        // lexical overlap 0..1
-
-// Either-high rule: if one signal is clearly high, still support
-export const EITHER_SUPPORT_SIM = 0.32;
-export const EITHER_SUPPORT_OVERLAP = 0.12;
-
+/**
+ * Evidence item shape used by the UI.
+ */
 export type EvidenceItem = {
-  idx: number;      // chunk index
-  text: string;     // chunk text (preview)
-  score: number;    // cosine similarity (higher = closer)
-  overlap: number;  // lexical overlap 0..1
+  /** Chunk index */
+  idx: number;
+  /** Chunk text */
+  text: string;
+  /** Embedding similarity (cosine 0..1) */
+  score: number;
+  /** Lexical overlap ratio (0..1) from scoring.ts */
+  overlap: number;
+  /** Per-chunk label for debugging / future UI */
+  label: EvidenceLabel;
 };
 
-/** Cosine similarity of two equal-length Float32Array vectors */
-function cosine(a: Float32Array, b: Float32Array): number {
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
-
-/** very simple tokenization; ignores short/common words */
-function tokens(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((t) => t.length >= 3 && !STOP.has(t));
-}
-
-const STOP = new Set([
-  "the","and","for","with","that","this","from","have","has","had","was","were",
-  "are","not","but","you","your","their","its","into","about","over","out",
-  "did","does","of","in","on","at","as","by","to","it","a","an"
-]);
-
-/** normalized overlap of query vs text tokens */
-function overlapNorm(query: string, text: string): number {
-  const q = tokens(query);
-  const tset = new Set(tokens(text));
-  if (q.length === 0 || tset.size === 0) return 0;
-  let hit = 0;
-  for (const w of q) if (tset.has(w)) hit++;
-  return hit / Math.max(q.length, 1);
-}
-
-/** Try multiple known vectorStore APIs, including default export */
-async function getVectorsForDocLoose(docId: string): Promise<any[]> {
-  const mods = [VS as any, (VS as any)?.default].filter(Boolean);
-
-  for (const mod of mods) {
-    if (typeof mod.getVectorsForDoc === "function") return await mod.getVectorsForDoc(docId);
-    if (typeof mod.getVectorsByDoc === "function") return await mod.getVectorsByDoc(docId);
-    if (typeof mod.listVectorsForDoc === "function") return await mod.listVectorsForDoc(docId);
-    if (typeof mod.getVectors === "function") return await mod.getVectors(docId);
-    if (typeof mod.getAllVectors === "function") {
-      const all = await mod.getAllVectors();
-      return (all || []).filter((r: any) => r.docId === docId);
-    }
-  }
-
-  throw new Error("VectorStore API not found (expected getVectorsForDoc or similar).");
+function toFloat32(v: Float32Array | number[] | any): Float32Array {
+  if (v instanceof Float32Array) return v;
+  if (Array.isArray(v)) return new Float32Array(v);
+  return new Float32Array(v as ArrayLike<number>);
 }
 
 /**
- * Retrieve top-k evidence for a claim within a selected document.
- * Returns the top items plus a coarse status (supported/unknown).
+ * Simple cosine similarity between two vectors.
+ */
+function cosine(a: Float32Array, b: Float32Array | number[]): number {
+  const bv = toFloat32(b);
+  const n = Math.min(a.length, bv.length);
+  if (!n) return 0;
+
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < n; i++) {
+    const x = a[i];
+    const y = bv[i];
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (!na || !nb) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/**
+ * Retrieve top-k evidence chunks for a claim and summarize an overall status.
+ *
+ * Public status is currently:
+ * - "supported" if we saw at least one supported chunk and no contradictions.
+ * - "unknown"  otherwise (includes conflicting evidence).
+ *
+ * Each EvidenceItem keeps its own `label` for future UI tweaks.
  */
 export async function retrieveEvidenceForClaim(
   claimText: string,
   docId: string,
-  topK = 3
-): Promise<{ items: EvidenceItem[]; status: "supported" | "unknown" }> {
-  // 1) embed claim
-  const qvec = await embedText(claimText);
-
-  // 2) load vectors for selected doc (tolerant API)
-  //    Expected shape per item: { idx, text, vector: Float32Array | number[] }
-  const chunks = await getVectorsForDocLoose(docId);
-
-  // 3) score each chunk
-  const scored: EvidenceItem[] = (chunks as any[]).map((c) => {
-    const vec: Float32Array =
-      c.vector instanceof Float32Array ? c.vector : new Float32Array(c.vector as number[] | ArrayLike<number>);
-    const sim = cosine(qvec, vec);
-    const ov = overlapNorm(claimText, String(c.text ?? ""));
-    return { idx: Number(c.idx ?? 0), text: String(c.text ?? ""), score: sim, overlap: ov };
-  });
-
-  // 4) sort by similarity desc (stable enough for tiny sets)
-  scored.sort((a, b) => b.score - a.score);
-
-  // keep topK for UI
-  const items = scored.slice(0, topK);
-
-  // 5) support decision (any of topK qualifies)
-  let supported = false;
-  for (const it of items) {
-    const phraseHit = it.text.toLowerCase().includes(claimText.toLowerCase());
-    if (
-      phraseHit ||
-      (it.score >= SIM_SUPPORT && it.overlap >= OVERLAP_SUPPORT) ||
-      (it.score >= EITHER_SUPPORT_SIM || it.overlap >= EITHER_SUPPORT_OVERLAP)
-    ) {
-      supported = true;
-      break;
-    }
+  k = 5
+): Promise<{ status: "supported" | "unknown"; items: EvidenceItem[] }> {
+  const claim = (claimText || "").trim();
+  if (!claim) {
+    return { status: "unknown", items: [] };
   }
 
-  return { items, status: supported ? "supported" : "unknown" };
+  const rows: VectorRecord[] = await getVectorsByDocId(docId);
+  if (!rows || rows.length === 0) {
+    throw new Error("No embeddings stored for this document.");
+  }
+
+  const qvec = await embedText(claim);
+
+  // rank chunks by embedding similarity
+  const ranked = rows
+    .map((row) => ({
+      row,
+      sim: cosine(qvec, row.vector as any),
+    }))
+    .sort((a, b) => b.sim - a.sim)
+    .slice(0, Math.max(1, Math.min(k, rows.length)));
+
+  const items: EvidenceItem[] = [];
+  let sawSupported = false;
+  let sawContradiction = false;
+
+  for (const { row, sim } of ranked) {
+    const { label, overlap } = scoreEvidence(claim, row.text);
+
+    items.push({
+      idx: row.idx,
+      text: row.text,
+      score: sim,
+      overlap,
+      label,
+    });
+
+    if (label === "supported") sawSupported = true;
+    if (label === "contradiction") sawContradiction = true;
+  }
+
+  // Collapse into a simple status for the current UI:
+  // - any contradiction => unknown (flagged; don't over-trust)
+  // - else if any supported => supported
+  // - else unknown
+  const status: "supported" | "unknown" =
+    sawContradiction ? "unknown" : sawSupported ? "supported" : "unknown";
+
+  return { status, items };
 }
