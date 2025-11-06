@@ -24,9 +24,8 @@ import { parsePdfFile } from "../lib/pdf";
 import { loadEmbedder, embedMany, embedText } from "../lib/embeddings";
 import {
   hasVectorsForDoc,
-  saveVectors as saveVecs,
-  getVectorsByDocId as getVecsByDocId,
-  topK,
+  saveVectorsForDoc,        // CHANGED: new API (docId, rows[])
+  getVectorsForDoc,         // CHANGED: new API (docId) => VectorRecord[]
   deleteVectorsForDoc,
   type VectorRecord,
 } from "../lib/vectorStore";
@@ -40,6 +39,19 @@ import { retrieveEvidenceForClaim, type EvidenceItem } from "../lib/retrieval";
 import AnswerHighlighter from "./AnswerHighlighter";
 import FixDraft from "./FixDraft";
 import ReportView from "./ReportView";
+
+/** cosine similarity for Float32Array vectors */
+function cosine(a: Float32Array, b: Float32Array): number {
+  let dot = 0, na = 0, nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a[i], y = b[i];
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+}
 
 export default function PageShell() {
   const { push } = useToast();
@@ -225,12 +237,8 @@ export default function PageShell() {
 
   async function onClearAll() {
     await clearAll();
-    setDocs([]);
-    setSelectedDocId(null);
-    setChunks([]);
-    setHasVectors(false);
-    setResults([]);
-    setStorageRefreshKey((k) => k + 1);
+    setDocs([]); setSelectedDocId(null); setChunks([]); setHasVectors(false);
+    setResults([]); setStorageRefreshKey((k) => k + 1);
     push({ title: "Cleared", description: "All local data wiped." });
   }
 
@@ -287,7 +295,19 @@ export default function PageShell() {
         }
       });
 
-      await saveVecs(selectedDocId, chunks.slice(0, batch.length), vecs);
+      // CHANGED: saveVectorsForDoc(docId, rows[])
+      const rows = chunks.slice(0, batch.length).map((c, i) => ({
+        id: `${selectedDocId}:${c.idx}`,
+        docId: selectedDocId!,
+        idx: c.idx,
+        text: c.text,
+        page: (c as any).page,
+        start: c.start,
+        end: c.end,
+        vector: vecs[i], // Float32Array is fine; vectorStore serializes to number[]
+      }));
+      await saveVectorsForDoc(selectedDocId, rows);
+
       setHasVectors(true);
       setEmbedStatus(
         tooMany
@@ -317,9 +337,15 @@ export default function PageShell() {
     }
     setEmbedStatus("Embedding query…");
     const qvec = await embedText(query);
-    const items = await getVecsByDocId(selectedDocId);
-    const top = topK(qvec, items, 5);
-    setResults(top);
+
+    const items = await getVectorsForDoc(selectedDocId);
+    const scored: Array<VectorRecord & { score: number }> = items.map((it) => {
+      const v = it.vector instanceof Float32Array ? it.vector : new Float32Array(it.vector as any);
+      const score = cosine(qvec, v);
+      return { ...it, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    setResults(scored.slice(0, 5));
     setEmbedStatus("Query done.");
   }
 
