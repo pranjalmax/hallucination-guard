@@ -1,130 +1,166 @@
 // src/lib/claims.ts
+/**
+ * Claim extraction (phrase-level)
+ * - Finds tokens: numbers/years, months/dates, quoted titles, capitalized entities
+ * - Expands each token to a short phrase (within sentence) so the UI shows readable claims
+ * - De-duplicates and sorts by position
+ */
 
+export type ClaimKind = "number" | "date" | "entity" | "quoted";
 export type Claim = {
   id: string;
+  kind: ClaimKind;
+  /** Minimal token that triggered the claim, e.g., "2022" */
+  token: string;
+  /** Readable phrase snippet around the token (for UI & scoring text) */
   text: string;
-  start: number; // start index in the original answer
-  end: number;   // end index (exclusive)
-  tags: string[]; // e.g., ["number"], ["date"], ["entity"], ["quoted"]
+  /** Character indices inside the original answer */
+  start: number;
+  end: number;
 };
 
-/** simple id helper */
-function cid(prefix = "c") {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+const MONTHS =
+  "(January|February|March|April|May|June|July|August|September|October|November|December)";
+const YEAR = "(19\\d{2}|20\\d{2})";
+
+const RE_NUMBER = /\b\d+(?:\.\d+)?\b/g;
+const RE_YEAR = new RegExp(`\\b${YEAR}\\b`, "g");
+const RE_MONTH = new RegExp(`\\b${MONTHS}\\b`, "g");
+const RE_QUOTED = /"([^"]{3,80})"|‘([^’]{3,80})’|“([^”]{3,80})”/g;
+// simple Proper Noun sequence: e.g., "Lionel Messi", "World Cup"
+const RE_ENTITY = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g;
+
+/** id helper */
+function id(prefix = "c"): string {
+  return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-/** very light sentence splitter (ok for our use) */
-export function splitSentences(input: string): { text: string; start: number; end: number }[] {
-  const out: { text: string; start: number; end: number }[] = [];
-  let i = 0;
-  let cursor = 0;
-  const s = input.replace(/\r\n/g, "\n");
+/** clamp a range to sentence boundaries and target phrase length */
+function expandToPhrase(input: string, from: number, to: number): { start: number; end: number } {
+  // 1) find sentence boundaries
+  const SENT_END = /[.!?]/g;
+  let sStart = 0;
+  let sEnd = input.length;
 
-  while (i < s.length) {
-    const ch = s[i];
-    if (/[.!?]/.test(ch)) {
-      // include following spaces
-      let j = i + 1;
-      while (j < s.length && /\s/.test(s[j])) j++;
-      const sent = s.slice(cursor, j).trim();
-      if (sent) out.push({ text: sent, start: cursor, end: j });
-      cursor = j;
-      i = j;
-    } else {
-      i++;
+  // look left for previous sentence end
+  for (let i = from; i >= 0; i--) {
+    if (/[.!?]/.test(input[i])) {
+      sStart = i + 1;
+      break;
     }
   }
-  if (cursor < s.length) {
-    const last = s.slice(cursor).trim();
-    if (last) out.push({ text: last, start: cursor, end: s.length });
+  // look right for next sentence end
+  for (let i = to; i < input.length; i++) {
+    if (/[.!?]/.test(input[i])) {
+      sEnd = i + 1;
+      break;
+    }
   }
-  return out;
+
+  // 2) grow window around token to ~8–16 words, bounded by sentence
+  const slice = input.slice(sStart, sEnd);
+  const BEFORE_TARGET = 8;
+  const AFTER_TARGET = 8;
+
+  // count words before/after token inside the sentence slice
+  const relStart = from - sStart;
+  const leftPart = slice.slice(0, relStart);
+  const rightPart = slice.slice(relStart);
+
+  function cutByWords(txt: string, words: number, fromRight = true): string {
+    const ws = txt.trim().split(/\s+/);
+    if (ws.length <= words) return txt;
+    return fromRight
+      ? ws.slice(ws.length - words).join(" ")
+      : ws.slice(0, words).join(" ");
+  }
+
+  const leftWin = cutByWords(leftPart, BEFORE_TARGET, true);
+  const rightWin = cutByWords(rightPart, AFTER_TARGET, false);
+
+  // rebuild phrase boundaries relative to full input
+  const phrase = (leftWin + rightWin).trim();
+  const phraseStart = input.indexOf(leftWin.trim(), sStart);
+  const phraseEnd = phraseStart + (leftWin + rightWin).length;
+
+  // sanity bounds
+  const start = Math.max(0, phraseStart);
+  const end = Math.min(input.length, phraseEnd);
+  return { start, end };
 }
 
-/**
- * Heuristic claim mining:
- * - numbers/percentages/currency
- * - years and Month names
- * - quoted titles
- * - capitalized multi-word entities (2-5 words)
- * - fallback: declarative sentences containing copulas ("is/are/was/were/has/have")
- */
-export function extractClaims(answer: string, maxClaims = 50): Claim[] {
+function pushClaim(
+  arr: Claim[],
+  input: string,
+  matchText: string,
+  start: number,
+  end: number,
+  kind: ClaimKind
+) {
+  if (!matchText) return;
+
+  // Expand to a readable phrase
+  const { start: pStart, end: pEnd } = expandToPhrase(input, start, end);
+  const phrase = input.slice(pStart, pEnd).trim();
+
+  // De-duplicate by overlapping ranges (favor earlier)
+  const overlap = arr.some(
+    (c) => !(pEnd <= c.start || pStart >= c.end) && c.kind === kind
+  );
+  if (overlap) return;
+
+  arr.push({
+    id: id("claim"),
+    kind,
+    token: matchText,
+    text: phrase,
+    start: pStart,
+    end: pEnd,
+  });
+}
+
+export function extractClaims(input: string): Claim[] {
   const claims: Claim[] = [];
-  const seen = new Set<string>();
-  const pushClaim = (text: string, start: number, end: number, tags: string[]) => {
-    const key = text.toLowerCase().slice(0, 200);
-    if (seen.has(key)) return;
-    seen.add(key);
-    claims.push({ id: cid("claim"), text: text.trim(), start, end, tags });
-  };
+  if (!input || !input.trim()) return claims;
 
-  const sentences = splitSentences(answer);
-
-  const numberRe =
-    /\b(?:\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s?%|k|m|b)?\b|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|hundred|thousand|million|billion)\b/gi;
-
-  const yearRe = /\b(19|20)\d{2}\b/g;
-  const monthRe =
-    /\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/gi;
-
-  const quotedRe = /"([^"]{5,120})"|'([^']{5,120})'/g;
-
-  const properNounRe = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b/g;
-
-  for (const sent of sentences) {
-    const baseStart = sent.start;
-
-    // 1) quoted titles
-    for (const m of sent.text.matchAll(quotedRe)) {
-      const txt = (m[1] || m[2] || "").trim();
-      if (!txt) continue;
-      const local = sent.text.indexOf(txt, m.index ?? 0);
-      const start = baseStart + local;
-      const end = start + txt.length;
-      pushClaim(txt, start, end, ["quoted"]);
-    }
-
-    // 2) numbers / percentages / currency
-    for (const m of sent.text.matchAll(numberRe)) {
-      const txt = m[0];
-      const start = baseStart + (m.index ?? 0);
-      const end = start + txt.length;
-      pushClaim(txt, start, end, ["number"]);
-    }
-
-    // 3) dates (years / months)
-    for (const m of sent.text.matchAll(yearRe)) {
-      const txt = m[0];
-      const start = baseStart + (m.index ?? 0);
-      pushClaim(txt, start, start + txt.length, ["date"]);
-    }
-    for (const m of sent.text.matchAll(monthRe)) {
-      const txt = m[0];
-      const start = baseStart + (m.index ?? 0);
-      pushClaim(txt, start, start + txt.length, ["date"]);
-    }
-
-    // 4) capitalized multi-word entities (skip at sentence very start if it's just the first word)
-    for (const m of sent.text.matchAll(properNounRe)) {
-      const txt = m[0];
-      // avoid grabbing short starts like "This Work"
-      if (txt.split(/\s+/).length < 2) continue;
-      const start = baseStart + (m.index ?? 0);
-      pushClaim(txt, start, start + txt.length, ["entity"]);
-    }
-
-    // 5) fallback: sentence-level claims if it looks declarative & not too long
-    const looksDeclarative =
-      /\b(is|are|was|were|has|have|shows?|reports?|states?|confirms?)\b/i.test(sent.text);
-    if (looksDeclarative && sent.text.length >= 40 && sent.text.length <= 280) {
-      pushClaim(sent.text, sent.start, sent.end, ["sentence"]);
-    }
-
-    if (claims.length >= maxClaims) break;
+  // quoted titles first (highest confidence)
+  for (const m of input.matchAll(RE_QUOTED)) {
+    const full = m[0];
+    const idx = m.index ?? -1;
+    if (idx >= 0) pushClaim(claims, input, full.replace(/^[“"‘]|[”"’]$/g, ""), idx, idx + full.length, "quoted");
   }
 
-  // keep short, de-duplicate already done; sort by start
+  // months / dates
+  for (const m of input.matchAll(RE_MONTH)) {
+    const full = m[0];
+    const idx = m.index ?? -1;
+    if (idx >= 0) pushClaim(claims, input, full, idx, idx + full.length, "date");
+  }
+  for (const m of input.matchAll(RE_YEAR)) {
+    const full = m[0];
+    const idx = m.index ?? -1;
+    if (idx >= 0) pushClaim(claims, input, full, idx, idx + full.length, "number");
+  }
+
+  // general numbers (keep short)
+  for (const m of input.matchAll(RE_NUMBER)) {
+    const full = m[0];
+    if (full.length > 4) continue; // likely already caught by year
+    const idx = m.index ?? -1;
+    if (idx >= 0) pushClaim(claims, input, full, idx, idx + full.length, "number");
+  }
+
+  // simple proper-noun entities (skip months already captured)
+  for (const m of input.matchAll(RE_ENTITY)) {
+    const full = m[0];
+    // avoid single capital letters or month duplicates
+    if (/^[A-Z]$/.test(full)) continue;
+    if (new RegExp(`^${MONTHS}$`).test(full)) continue;
+    const idx = m.index ?? -1;
+    if (idx >= 0) pushClaim(claims, input, full, idx, idx + full.length, "entity");
+  }
+
+  // sort by start
   claims.sort((a, b) => a.start - b.start);
-  return claims.slice(0, maxClaims);
+  return claims;
 }

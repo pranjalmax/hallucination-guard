@@ -1,20 +1,22 @@
+// src/App.tsx
 import * as React from "react";
 import GradientBG from "./components/GradientBG";
 import NavBar from "./components/NavBar";
 import PageShell from "./components/PageShell";
-import { Toaster } from "./components/Toaster";
+import BackToTop from "./components/BackToTop";
+import { Toaster } from "./components/ui/sonner";
+import { ToastProvider } from "./components/ui/use-toast";
 
 export default function App() {
   return (
-    <>
-      <GradientBG />
-      <Toaster>
+    <ToastProvider>
+      <div className="min-h-screen text-slate-200">
+        <GradientBG />
         <NavBar />
         <PageShell />
-      </Toaster>
-      <footer className="mt-10 mb-6 text-center text-xs text-muted">
-        v0.1 — Visual shell only. Functionality arrives in Steps 2–9.
-      </footer>
-    </>
+        <BackToTop />
+        <Toaster />
+      </div>
+    </ToastProvider>
   );
 }
