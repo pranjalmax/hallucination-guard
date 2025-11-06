@@ -1,6 +1,6 @@
 // src/lib/retrieval.ts
-// Lightweight evidence retrieval + scoring.
-// Uses a tolerant import of vectorStore (works with different function names).
+// Evidence retrieval + scoring with friendly thresholds.
+// Now tolerant to both named AND default exports from vectorStore.
 
 import { embedText } from "./embeddings";
 import * as VS from "./vectorStore";
@@ -57,17 +57,21 @@ function overlapNorm(query: string, text: string): number {
   return hit / Math.max(q.length, 1);
 }
 
-/** Try multiple known vectorStore APIs so TS build won't break. */
+/** Try multiple known vectorStore APIs, including default export */
 async function getVectorsForDocLoose(docId: string): Promise<any[]> {
-  const m = VS as any;
-  if (typeof m.getVectorsForDoc === "function") return m.getVectorsForDoc(docId);
-  if (typeof m.getVectorsByDoc === "function") return m.getVectorsByDoc(docId);
-  if (typeof m.listVectorsForDoc === "function") return m.listVectorsForDoc(docId);
-  if (typeof m.getVectors === "function") return m.getVectors(docId);
-  if (typeof m.getAllVectors === "function") {
-    const all = await m.getAllVectors();
-    return (all || []).filter((r: any) => r.docId === docId);
+  const mods = [VS as any, (VS as any)?.default].filter(Boolean);
+
+  for (const mod of mods) {
+    if (typeof mod.getVectorsForDoc === "function") return await mod.getVectorsForDoc(docId);
+    if (typeof mod.getVectorsByDoc === "function") return await mod.getVectorsByDoc(docId);
+    if (typeof mod.listVectorsForDoc === "function") return await mod.listVectorsForDoc(docId);
+    if (typeof mod.getVectors === "function") return await mod.getVectors(docId);
+    if (typeof mod.getAllVectors === "function") {
+      const all = await mod.getAllVectors();
+      return (all || []).filter((r: any) => r.docId === docId);
+    }
   }
+
   throw new Error("VectorStore API not found (expected getVectorsForDoc or similar).");
 }
 
@@ -105,7 +109,6 @@ export async function retrieveEvidenceForClaim(
   // 5) support decision (any of topK qualifies)
   let supported = false;
   for (const it of items) {
-    // Simple phrase hit (case-insensitive) helps short, single-chunk docs
     const phraseHit = it.text.toLowerCase().includes(claimText.toLowerCase());
     if (
       phraseHit ||
