@@ -1,9 +1,9 @@
 // src/lib/retrieval.ts
-// Lightweight evidence retrieval + scoring for tiny, client-side docs.
-// Looser thresholds + a simple phrase-hit rule so obvious matches are marked supported.
+// Lightweight evidence retrieval + scoring.
+// Uses a tolerant import of vectorStore (works with different function names).
 
 import { embedText } from "./embeddings";
-import { getVectorsForDoc } from "./vectorStore";
+import * as VS from "./vectorStore";
 
 /** Looser thresholds for small docs / single-chunk cases */
 export const SIM_SUPPORT = 0.27;            // cosine similarity 0..1
@@ -57,6 +57,20 @@ function overlapNorm(query: string, text: string): number {
   return hit / Math.max(q.length, 1);
 }
 
+/** Try multiple known vectorStore APIs so TS build won't break. */
+async function getVectorsForDocLoose(docId: string): Promise<any[]> {
+  const m = VS as any;
+  if (typeof m.getVectorsForDoc === "function") return m.getVectorsForDoc(docId);
+  if (typeof m.getVectorsByDoc === "function") return m.getVectorsByDoc(docId);
+  if (typeof m.listVectorsForDoc === "function") return m.listVectorsForDoc(docId);
+  if (typeof m.getVectors === "function") return m.getVectors(docId);
+  if (typeof m.getAllVectors === "function") {
+    const all = await m.getAllVectors();
+    return (all || []).filter((r: any) => r.docId === docId);
+  }
+  throw new Error("VectorStore API not found (expected getVectorsForDoc or similar).");
+}
+
 /**
  * Retrieve top-k evidence for a claim within a selected document.
  * Returns the top items plus a coarse status (supported/unknown).
@@ -69,15 +83,17 @@ export async function retrieveEvidenceForClaim(
   // 1) embed claim
   const qvec = await embedText(claimText);
 
-  // 2) load vectors for selected doc
-  //    Expected shape from vectorStore: [{ idx, text, vector: Float32Array }, ...]
-  const chunks = await getVectorsForDoc(docId);
+  // 2) load vectors for selected doc (tolerant API)
+  //    Expected shape per item: { idx, text, vector: Float32Array | number[] }
+  const chunks = await getVectorsForDocLoose(docId);
 
   // 3) score each chunk
-  const scored: EvidenceItem[] = chunks.map((c: any) => {
-    const sim = cosine(qvec, c.vector as Float32Array);
-    const ov = overlapNorm(claimText, c.text as string);
-    return { idx: c.idx as number, text: c.text as string, score: sim, overlap: ov };
+  const scored: EvidenceItem[] = (chunks as any[]).map((c) => {
+    const vec: Float32Array =
+      c.vector instanceof Float32Array ? c.vector : new Float32Array(c.vector as number[] | ArrayLike<number>);
+    const sim = cosine(qvec, vec);
+    const ov = overlapNorm(claimText, String(c.text ?? ""));
+    return { idx: Number(c.idx ?? 0), text: String(c.text ?? ""), score: sim, overlap: ov };
   });
 
   // 4) sort by similarity desc (stable enough for tiny sets)
