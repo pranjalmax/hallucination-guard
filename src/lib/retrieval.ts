@@ -1,84 +1,105 @@
 // src/lib/retrieval.ts
+// Lightweight evidence retrieval + scoring for tiny, client-side docs.
+// Looser thresholds + a simple phrase-hit rule so obvious matches are marked supported.
+
 import { embedText } from "./embeddings";
-import { getVectorsByDocId, topK, type VectorRecord } from "./vectorStore";
+import { getVectorsForDoc } from "./vectorStore";
 
-/** very small stopword list for overlap scoring */
-const STOP = new Set([
-  "the","a","an","and","or","to","of","in","on","for","with",
-  "is","are","was","were","be","been","being","as","by","at",
-  "from","that","this","these","those","it","its","their","his","her",
-  "we","you","they","i","our","your","their","there","here"
-]);
+/** Looser thresholds for small docs / single-chunk cases */
+export const SIM_SUPPORT = 0.27;            // cosine similarity 0..1
+export const OVERLAP_SUPPORT = 0.08;        // lexical overlap 0..1
 
-/** tokenize to lowercase words/numbers, filter short words/stopwords */
-function tokenize(s: string): string[] {
-  return (s.toLowerCase().match(/[a-z0-9]+/g) || [])
-    .filter(w => w.length > 2 && !STOP.has(w));
-}
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter++;
-  if (a.size === 0 && b.size === 0) return 0;
-  const uni = a.size + b.size - inter;
-  return uni ? inter / uni : 0;
-}
+// Either-high rule: if one signal is clearly high, still support
+export const EITHER_SUPPORT_SIM = 0.32;
+export const EITHER_SUPPORT_OVERLAP = 0.12;
 
 export type EvidenceItem = {
-  idx: number;
-  text: string;
-  score: number;     // cosine on normalized vectors
-  overlap: number;   // simple token-Jaccard with claim
-  start: number;
-  end: number;
+  idx: number;      // chunk index
+  text: string;     // chunk text (preview)
+  score: number;    // cosine similarity (higher = closer)
+  overlap: number;  // lexical overlap 0..1
 };
 
-export type EvidenceResult = {
-  status: "supported" | "unknown";
-  items: EvidenceItem[];
-};
+/** Cosine similarity of two equal-length Float32Array vectors */
+function cosine(a: Float32Array, b: Float32Array): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** very simple tokenization; ignores short/common words */
+function tokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !STOP.has(t));
+}
+
+const STOP = new Set([
+  "the","and","for","with","that","this","from","have","has","had","was","were",
+  "are","not","but","you","your","their","its","into","about","over","out",
+  "did","does","of","in","on","at","as","by","to","it","a","an"
+]);
+
+/** normalized overlap of query vs text tokens */
+function overlapNorm(query: string, text: string): number {
+  const q = tokens(query);
+  const tset = new Set(tokens(text));
+  if (q.length === 0 || tset.size === 0) return 0;
+  let hit = 0;
+  for (const w of q) if (tset.has(w)) hit++;
+  return hit / Math.max(q.length, 1);
+}
 
 /**
- * Retrieve and score evidence for a claim text against one document.
- * Requires embeddings already computed for that doc.
+ * Retrieve top-k evidence for a claim within a selected document.
+ * Returns the top items plus a coarse status (supported/unknown).
  */
 export async function retrieveEvidenceForClaim(
   claimText: string,
   docId: string,
-  k = 5
-): Promise<EvidenceResult> {
+  topK = 3
+): Promise<{ items: EvidenceItem[]; status: "supported" | "unknown" }> {
+  // 1) embed claim
   const qvec = await embedText(claimText);
-  const items = await getVectorsByDocId(docId);
-  if (!items.length) {
-    return { status: "unknown", items: [] };
-  }
 
-  // top-k by cosine
-  const top = topK(qvec, items, k);
+  // 2) load vectors for selected doc
+  //    Expected shape from vectorStore: [{ idx, text, vector: Float32Array }, ...]
+  const chunks = await getVectorsForDoc(docId);
 
-  // compute a simple overlap score between the claim tokens and each chunk
-  const claimSet = new Set(tokenize(claimText));
-  const scored: EvidenceItem[] = top.map((r) => {
-    const chunkSet = new Set(tokenize(r.text));
-    const overlap = jaccard(claimSet, chunkSet);
-    return {
-      idx: r.idx,
-      text: r.text,
-      score: r.score,
-      overlap,
-      start: r.start,
-      end: r.end,
-    };
+  // 3) score each chunk
+  const scored: EvidenceItem[] = chunks.map((c: any) => {
+    const sim = cosine(qvec, c.vector as Float32Array);
+    const ov = overlapNorm(claimText, c.text as string);
+    return { idx: c.idx as number, text: c.text as string, score: sim, overlap: ov };
   });
 
-  // decide status: supported if either similarity or token overlap is strong
-  const best = scored[0];
-  const SIM_THRESHOLD = 0.60;     // cosine on normalized vectors (0..1)
-  const OVERLAP_THRESHOLD = 0.35; // token-jaccard threshold
-  const supported = best && (best.score >= SIM_THRESHOLD || best.overlap >= OVERLAP_THRESHOLD);
+  // 4) sort by similarity desc (stable enough for tiny sets)
+  scored.sort((a, b) => b.score - a.score);
 
-  return {
-    status: supported ? "supported" : "unknown",
-    items: scored,
-  };
+  // keep topK for UI
+  const items = scored.slice(0, topK);
+
+  // 5) support decision (any of topK qualifies)
+  let supported = false;
+  for (const it of items) {
+    // Simple phrase hit (case-insensitive) helps short, single-chunk docs
+    const phraseHit = it.text.toLowerCase().includes(claimText.toLowerCase());
+    if (
+      phraseHit ||
+      (it.score >= SIM_SUPPORT && it.overlap >= OVERLAP_SUPPORT) ||
+      (it.score >= EITHER_SUPPORT_SIM || it.overlap >= EITHER_SUPPORT_OVERLAP)
+    ) {
+      supported = true;
+      break;
+    }
+  }
+
+  return { items, status: supported ? "supported" : "unknown" };
 }
