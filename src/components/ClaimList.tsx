@@ -1,8 +1,10 @@
 // src/components/ClaimList.tsx
 import * as React from "react";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
 import type { Claim } from "../lib/claims";
+
+type Status = "supported" | "unknown" | "pending";
 
 export default function ClaimList({
   claims,
@@ -10,52 +12,78 @@ export default function ClaimList({
   onView,
 }: {
   claims: Claim[];
-  statuses?: Record<string, "supported" | "unknown" | "pending">;
-  onView?: (c: Claim) => void;
+  statuses: Record<string, Status>;
+  onView: (c: Claim) => void;
 }) {
-  if (!claims?.length) {
-    return <div className="text-muted text-sm">No claims yet — paste an answer and click Extract.</div>;
+  if (!claims || claims.length === 0) {
+    return (
+      <div className="text-sm text-slate-300/80">
+        No claims yet. Paste text and click <span className="font-semibold">Extract Claims</span>.
+      </div>
+    );
   }
 
   return (
     <div className="space-y-2">
-      {claims.map((c, i) => {
-        const st = statuses?.[c.id] || "pending";
-        const label =
-          st === "supported" ? "supported" :
-          st === "unknown" ? "unknown" : "pending";
-        const intent =
-          st === "supported" ? "success" :
-          st === "unknown" ? "warn" : undefined;
-
-        return (
-          <div key={c.id} className="rounded-lg border border-white/10 bg-white/5 p-3">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <div className="text-xs text-muted">Claim {i + 1}</div>
-              <Badge intent={intent as any}>{label}</Badge>
-            </div>
-            <div className="text-sm leading-relaxed">
-              {c.text.length > 360 ? c.text.slice(0, 360) + "…" : c.text}
-            </div>
-            <div className="mt-2 flex items-center gap-2">
-              {c.tags.map((t) => (
-                <Badge key={t} intent={t === "number" ? "info" : t === "date" ? "warn" : "success"}>
-                  {t}
-                </Badge>
-              ))}
-              <div className="flex-1" />
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onView?.(c)}
-                title="View evidence"
-              >
-                View evidence
-              </Button>
-            </div>
-          </div>
-        );
-      })}
+      {claims.map((c) => (
+        <ClaimRow
+          key={c.id}
+          claim={c}
+          status={statuses[c.id] ?? "pending"}
+          onView={() => onView(c)}
+        />
+      ))}
     </div>
+  );
+}
+
+function ClaimRow({
+  claim,
+  status,
+  onView,
+}: {
+  claim: Claim;
+  status: Status;
+  onView: () => void;
+}) {
+  const statusIntent =
+    status === "supported" ? ("success" as const) : status === "unknown" ? ("warn" as const) : ("info" as const);
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Badge intent={statusIntent} className="shrink-0 capitalize">
+              {status}
+            </Badge>
+            <KindChip kind={claim.kind} />
+          </div>
+          <div className="mt-1 text-sm leading-relaxed text-white line-clamp-2 break-words">
+            {claim.text}
+          </div>
+        </div>
+        <div className="shrink-0">
+          <Button size="sm" onClick={onView}>
+            View evidence
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KindChip({ kind }: { kind: Claim["kind"] }) {
+  const label =
+    kind === "number" ? "number" : kind === "date" ? "date" : kind === "quoted" ? "quoted" : "entity";
+  return (
+    <span
+      className="rounded-full px-2 py-[2px] text-[11px] uppercase tracking-wide
+                 bg-white/10 border border-white/15 text-slate-200"
+      aria-label={`claim kind: ${label}`}
+      title={`Detected as ${label}`}
+    >
+      {label}
+    </span>
   );
 }
