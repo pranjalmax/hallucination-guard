@@ -1,146 +1,218 @@
 # Hallucination Guard — Evidence Aligner & Red-Flag Highlighter
 
-Zero-cost, 100% client-side web app that reviews an LLM answer against local sources, highlights unsupported claims, and produces a grounded fix draft — all **in your browser**.
+**Live demo:** https://pranjalmax.github.io/hallucination-guard/  
+**Repo:** https://github.com/pranjalmax/hallucination-guard
 
-**Stack:** React + Vite, Tailwind CSS, shadcn/ui, Framer Motion, lucide-react, pdf.js, localForage (IndexedDB), Transformers.js (embeddings), optional WebLLM (on-device).  
-**No backend. No paid APIs. Deployable on GitHub Pages.**
-
----
-
-## ✨ Core Features
-
-- **Sources ingest:** Upload PDFs (pdf.js) or paste text/Markdown → chunk (~1000 chars, 150 overlap) and store locally.
-- **Embeddings & retrieval:** Compute embeddings in-browser (Transformers.js MiniLM-class), store vectors in IndexedDB, cosine top-k search.
-- **Claim detection:** Heuristics for dates, numbers, entities, quoted titles, and simple noun phrases.
-- **Evidence scoring:** Support / Unknown via overlap + similarity thresholds.
-- **Red-flag highlighter:** Inline colored spans (supported green, unknown amber) with clickable citation chips `[C#]`.
-- **Fix draft:** WebLLM rewrite if possible; otherwise safe **template-based** grounded rewrite (no hallucinations).
-- **Report export:** Download JSON and copy Markdown; includes claim table, references, and rough before/after diff.
-- **Privacy controls:** Storage meter + “Clear local data” wipes IndexedDB.
+> Paste an LLM answer → ingest sources → get inline highlights, evidence links, and a grounded fix draft.  
+> 100% client-side. Zero cost. Built as a practical hallucination guardrail demo.
 
 ---
 
-## 🚀 60-Second Quickstart
+## Demo
 
-**Requirements:** Node.js 18+ (or 20+), a modern Chromium-based browser. WebGPU optional (for WebLLM path).
+![Hallucination Guard demo](docs/demo.gif)
+
+*(Short: ingest → embeddings → extract claims → view evidence → report.)*
+
+---
+
+## Why this project exists (for reviewers & recruiters)
+
+Modern LLMs are powerful but **hallucinate facts**. Many teams want:
+
+- A lightweight way to **check answers against their own documents**.
+- **No backend**, no data leaving the browser.
+- Something they can understand, tweak, and trust.
+
+I built **Hallucination Guard** to demonstrate that:
+
+1. You can do **retrieval + basic claim checking entirely in the browser**.
+2. You can wrap that in a **real product experience**, not just a demo script.
+3. I can own the full stack: **UX → frontend architecture → on-device ML → infra (CI/CD)**.
+
+If you’re reading this as a hiring manager: this repo is meant to be a clear, production-style sample of how I design & ship an AI tool under real constraints.
+
+---
+
+## What this showcases about my skills
+
+**Product & UX**
+
+- Turned “hallucination guard” into a clear, guided flow (Sources → Review → Report).
+- Strong focus on **explainability & trust**: visible sources, citations, diff, and privacy controls.
+- Dark, modern **“AI tool” aesthetic** with gradients, glassmorphism, micro-animations.
+
+**Frontend Engineering**
+
+- React + Vite + TypeScript SPA, deployable as static assets (GitHub Pages).
+- Tailwind CSS + shadcn/ui + Framer Motion + lucide icons.
+- Modular, typed components: `PageShell`, `ClaimList`, `FixDraft`, `ReportView`, etc.
+- Accessibility: focus states, keyboard-friendly controls, clear affordances.
+
+**AI / Retrieval Engineering**
+
+- Local embeddings via **Transformers.js** (MiniLM), run in the browser.
+- Simple **vector store on IndexedDB** with metadata, top-k retrieval.
+- Claim extraction using **regex + noun-phrase heuristics**, tuned for factual claims.
+- Evidence scoring with:
+  - lexical overlap,
+  - date/number checks,
+  - basic contradiction detection (e.g., February vs March).
+
+**Systems & Constraints**
+
+- 100% **client-side**, no paid APIs, no servers.
+- Uses **localForage + IndexedDB** for persistence; storage usage surfaced to user.
+- **GitHub Actions** workflow builds + deploys automatically to GitHub Pages.
+
+---
+
+## Core Features
+
+### 1. Sources Tab — “Ground truth” ingest
+
+- Upload PDFs (parsed via `pdf.js`) or paste plain text/Markdown.
+- Text is chunked (~800–1000 chars with overlap).
+- Chunks & document metadata stored in IndexedDB.
+- Storage meter + **Clear local data** button for privacy.
+
+### 2. Embeddings & Semantic Search
+
+- Per-document embeddings computed in-browser with Transformers.js.
+- Vectors stored alongside chunks in IndexedDB.
+- Semantic search UI to sanity-check retrieval.
+
+### 3. Review Tab — Claims & Red Flags
+
+- Paste any LLM answer.
+- **Extract Claims**:
+  - Finds numbers, dates, entities, and short phrases as candidate factual claims.
+- For each claim:
+  - Retrieves top-k evidence chunks from the selected source doc.
+  - Scores them:
+    - `supported` if strong overlap, no conflicting dates.
+    - `unknown` if weak/mixed / conflicting signals.
+    - Internal contradiction detection (e.g., February vs March) feeds into `unknown`.
+- Inline highlighting:
+  - Supported spans: **green glow**.
+  - Uncertain spans: **amber**.
+- “View evidence” shows matching chunks with scores & overlap.
+
+### 4. Fix Draft & Report Tab
+
+- **Fix Draft**:
+  - Uses retrieved evidence to propose a grounded revision.
+  - If a local small model is available, it can be plugged in.
+  - Otherwise, uses a template-based conservative rewrite.
+- **Report**:
+  - Claim table (Claim, Status, Citations).
+  - Mini “Factuality” bar.
+  - Before/After diff-style summary.
+  - **Copy Markdown** (for PRs / docs).
+  - **Download JSON** for programmatic use.
+
+### 5. Privacy & Safety
+
+- All data stays in the browser (no network calls for content).
+- User can wipe everything with one click.
+- No secret keys, no tracking, no external APIs for inference.
+
+---
+
+## How it works (high-level)
+
+1. **Ingest**
+   - PDF/text → `chunkText` → `storage` (IndexedDB).
+
+2. **Embed**
+   - `embeddings.ts` loads a tiny model via Transformers.js.
+   - `vectorStore.ts` persists `{ docId, chunkIdx, text, vector }`.
+
+3. **Extract claims**
+   - `claims.ts` scans the answer:
+     - regexes for numbers/dates/quotes,
+     - simple proper-noun / phrase windows.
+   - Produces phrase-level “claims” with spans.
+
+4. **Retrieve & score**
+   - `retrieval.ts`:
+     - embeds claim,
+     - retrieves nearest chunks,
+     - calls `scoreEvidence` from `scoring.ts`.
+   - `scoring.ts`:
+     - lexical overlap,
+     - month/year checks to avoid endorsing obviously wrong dates.
+
+5. **Highlight & report**
+   - `AnswerHighlighter` colors spans based on status.
+   - `ReportView` compiles claims, evidence, and a suggested fix.
+
+A diagram version of this lives in [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Tech Stack
+
+**Core**
+
+- React + Vite + TypeScript
+- Tailwind CSS
+- shadcn/ui components
+- Framer Motion
+- lucide-react icons
+
+**AI / Data**
+
+- Transformers.js (browser embeddings; MiniLM-style model)
+- pdf.js (PDF extraction)
+- localForage + IndexedDB (storage)
+
+**Tooling**
+
+- GitHub Actions (build + deploy)
+- GitHub Pages (static hosting)
+
+---
+
+## Getting Started (local)
 
 ```bash
-# 1) Install dependencies
+git clone https://github.com/pranjalmax/hallucination-guard.git
+cd hallucination-guard
 npm install
-
-# 2) Run dev server
-npm run dev
-# Open the printed Local URL (usually http://localhost:5173/)
-
-Basic flow (in the app):
-
-Sources tab → Upload a PDF or paste text → Ingest & Save
-
-Click Compute Embeddings (first time may download a tiny model)
-
-Review tab → Paste an LLM answer → Extract Claims
-
-For some claims, click View evidence → see top chunks and scores
-
-Fix Draft → Generate Fix Draft (WebLLM if available, else template)
-
-📂 Project Structure
-
-/
-├─ index.html
-├─ vite.config.ts
-├─ postcss.config.js
-├─ tailwind.config.js
-├─ src/
-│  ├─ main.tsx
-│  ├─ App.tsx
-│  ├─ styles.css
-│  ├─ components/
-│  │  ├─ PageShell.tsx
-│  │  ├─ AnswerHighlighter.tsx
-│  │  ├─ ClaimList.tsx
-│  │  ├─ FixDraft.tsx
-│  │  ├─ ReportView.tsx
-│  │  ├─ StorageMeter.tsx
-│  │  └─ ui/… (shadcn/ui primitives + toast/tabs/button/card/badge)
-│  └─ lib/
-│     ├─ pdf.ts             # pdf.js parsing
-│     ├─ chunkText.ts       # chunking logic
-│     ├─ embeddings.ts      # Transformers.js embedder
-│     ├─ vectorStore.ts     # IndexedDB storage for vectors/chunks
-│     ├─ claims.ts          # claim extraction heuristics
-│     ├─ retrieval.ts       # top-k search + overlap
-│     ├─ highlight.ts       # inline highlighter helpers
-│     ├─ fix.ts             # WebLLM (optional) + template fallback
-│     ├─ report.ts          # JSON + Markdown report builders
-│     └─ diff.ts            # rough sentence-level diff
-├─ docs/
-│  ├─ architecture.md
-│  └─ design.md
-└─ .github/workflows/deploy.yml  # GitHub Pages workflow (optional)
-
-🧠 How It Works (Pipeline)
-
-Ingest → Chunk → Embed → Retrieve → Score → Highlight → Fix Draft → Report
-
-Ingest PDFs/text → chunkText.ts
-
-Embed chunks in browser → embeddings.ts (Transformers.js, MiniLM-class)
-
-Save to IndexedDB (localForage) → vectorStore.ts
-
-Retrieve top-k by cosine + overlap → retrieval.ts
-
-Highlight answer spans with status chips → highlight.ts
-
-Fix Draft via WebLLM if possible (Qwen2.5-0.5B) → else template rewrite → fix.ts
-
-Report JSON/Markdown + rough diff → report.ts, diff.ts
-
-More details will be in docs/architecture.md and docs/design.md.
-
-🔒 Privacy & Offline
-
-All sources, vectors, and app state live in IndexedDB in your browser.
-
-Click Clear local data (Sources tab) to wipe.
-
-WebLLM (optional) fetches small model files to your browser. No server calls.
-
-🧰 Useful Commands
-# Start dev server
 npm run dev
 
-# Production build
-npm run build
-# Preview local build
-npm run preview
+Then open the printed localhost URL.
 
-🌐 Deploy to GitHub Pages (Static)
+Build:
+npm run build 
+```
+---
 
-If your repo name is hallucination-guard, your final URL will be:
-https://<YOUR_GH_USERNAME>.github.io/hallucination-guard/
+## Privacy & Limitations
 
-Set Vite base path in vite.config.ts to /<repo-name>/ (we’ll do this later).
+**Privacy**
+All processing happens in your browser.
+No content is sent to any server.
+Use “Clear local data” to wipe IndexedDB.
+**Limitations**
+Claim extraction is heuristic, not a full parser.
+Evidence scoring is intentionally conservative & simple.
+Not a formal fact-checker; it’s a practical assistive tool / demo.
+Web-embeddings model download can be a few MB on first run.
 
-Push to GitHub.
+---
 
-Use the provided GitHub Actions workflow to deploy.
+## Notes for Hiring Managers
 
-🪙 Troubleshooting
+If you’re evaluating my work, this repo is meant to show:
+I can design, implement, and ship an end-to-end AI feature, not just call an API.
+I understand retrieval, embeddings, and scoring heuristics, and can explain them.
+I care about UX, clarity, and safety, not just “it runs”.
+I can work within hard constraints (no backend, no paid APIs, privacy-first) and still deliver a polished experience.
+If you’d like a walkthrough of how I’d evolve this into a production-grade guardrail for your stack, I’m happy to explain.
 
-Blank page on Pages → base path likely wrong (vite.config.ts).
+---
 
-404 for assets → same as above; hard refresh (Ctrl+Shift+R).
-
-Embeddings error → allow the model CDN in your browser/privacy tools.
-
-WebLLM not working → browser may not support WebGPU; template rewrite still works.
-
-Quota exceeded → Ingest fewer pages or Clear local data.
-
-📝 License
-
+## License
 MIT
-
-Report tab → Copy Markdown or Download JSON

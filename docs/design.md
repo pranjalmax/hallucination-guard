@@ -1,213 +1,222 @@
-# Design — Hallucination Guard (Tokens, Motion, UX)
+# Hallucination Guard — Design & UX Notes
 
-A modern, dark, “very AI” aesthetic with subtle neon glows, glassy surfaces, and tasteful motion. These rules guide the look/feel across all components.
+This document explains the **visual system, interaction patterns, and UX decisions** behind Hallucination Guard.
 
----
+It’s written for:
 
-## 1) Colors (Design Tokens)
-
-**Base**
-- Background: `#0B0F19` (page)
-- Card: `#0F172A` (panels / surfaces)
-- Muted text: `#94A3B8`
-- Border (on dark): `rgba(255,255,255,0.10)` (≈ `#FFFFFF1A`)
-
-**Accents**
-- Neon Violet: `#8B5CF6` (primary)
-- Electric Cyan: `#22D3EE` (info / focus glow)
-- Mint: `#34D399` (success/supported)
-- Warning: `#F59E0B` (unknown/amber)
-- Error: `#F43F5E` (contradiction/failure)
-
-**Usage**
-- Primary CTAs/buttons: Violet
-- Links/focus rings: Cyan
-- Status chips: Mint (supported), Amber (unknown), Error (contradiction)
-
-> Keep contrast sufficient on dark backgrounds (WCAG AA). For small text on dark surfaces, prefer `#E2E8F0`–`#F8FAFC`.
+- Designers / PMs who want to understand the experience.
+- Engineers / recruiters who want to see how I think about product polish.
 
 ---
 
-## 2) Radii & Elevation
+## Design Goals
 
-- **Radii**
-  - Cards & large panels: **1.25rem** (rounded-2xl / `rounded-[1.25rem]`)
-  - Chips/Badges/Inputs: **Full** (`rounded-full`)
-- **Glassy Elevation**
-  - Surface: `background: rgba(255,255,255,0.04–0.06)` over dark base
-  - Border: `1px solid rgba(255,255,255,0.10)`
-  - Shadow (subtle glow on hover/focus):
-    - `0 0 12px rgba(139,92,246,0.35)` for violet focus
-    - `0 0 12px rgba(34,211,238,0.35)` for cyan focus
-
----
-
-## 3) Typography
-
-- **UI font:** Inter (weights 400, 600)
-- **Code font:** JetBrains Mono (400, 600) for code snippets/monospace blocks
-- **Sizes (Tailwind)**
-  - H1: `text-3xl sm:text-4xl` (600)
-  - H2: `text-2xl` (600)
-  - Body: `text-sm` (400)
-  - Muted copy: `text-xs text-muted`
-- **Line heights**
-  - Body copy: `leading-relaxed`
-  - Tight labels/buttons: default Tailwind
+1. **“Serious AI” look without gimmicks**
+   - Dark, focused, low-noise.
+   - Neon accents used sparingly to signal interactivity / state.
+2. **Make trust & grounding visible**
+   - Always show *why* something is tagged supported/unknown.
+   - Clear path from claim → evidence → report.
+3. **Guide the user**
+   - Obvious 3-step flow: **Review → Sources → Report**.
+   - No walls of settings. One focused track.
+4. **Stay light-weight**
+   - No heavy illustrations or frameworks.
+   - Layout and components are mostly Tailwind + small primitives.
 
 ---
 
-## 4) Motion (Framer Motion + CSS)
+## Layout & Information Architecture
+
+### Global Structure
+
+- **Top bar**
+  - App title + tagline.
+  - Pill buttons: “Zero Cost”, “Client-Side Only”, “No Backend”.
+  - GitHub link.
+- **Tabs**
+  - Centered: `Review | Sources | Report`.
+  - Communicates the mental model:
+    1. Check an answer.
+    2. Manage sources.
+    3. Export / share findings.
+
+### Review Tab
+
+Left: **Answer Editor**
+
+- Large textarea, clear placeholder.
+- `Extract Claims` is primary action.
+- Legend: green dot (Supported), amber dot (Unknown/Pending).
+- Below: `AnswerHighlighter` renders colored spans + small `[C]` chips.
+
+Right: **Claims & Evidence**
+
+- List of claims:
+  - Status badge (supported / unknown / pending).
+  - Type chip (DATE / NUMBER / ENTITY / QUOTED).
+  - “View evidence” CTA.
+- Evidence panel:
+  - Shows retrieved chunks with similarity & overlap.
+  - Goal: “you can manually audit this in 5 seconds”.
+
+### Sources Tab
+
+Left: **Ingest**
+
+- Upload PDF control.
+- Paste text area.
+- Two buttons:
+  - `Ingest & Save`
+  - `Clear local data`
+- Storage meter:
+  - Visualizes browser storage usage.
+  - Text explicitly mentions IndexedDB.
+
+Right: **Documents + Embeddings + Search**
+
+- Document dropdown + Delete button.
+- Keyword filter for chunks.
+- Scrollable chunk cards.
+- Embeddings card:
+  - Shows whether vectors exist.
+  - `Compute Embeddings` / `Recompute` button.
+  - Status text (“Model ready”, progress, etc.).
+- Semantic search:
+  - Query input + “Search”.
+  - Shows best-matching chunks.
+
+### Report Tab
+
+- **Claims table**
+  - `# | Status | Claim | Cites`.
+- **Factuality bar**
+  - Simple bar: supported vs unknown.
+- **Fix Draft**
+  - Shows grounded revision (template-based when no model).
+- **Diff-ish block**
+  - Highlights removed vs added content at a glance.
+- **Actions**
+  - `Copy Markdown`
+  - `Download JSON`
+- **References**
+  - `[C0]`, `[C1]` style chips for source chunks.
+
+---
+
+## Visual System
+
+### Color Tokens
+
+(implemented via Tailwind classes and CSS variables)
+
+- **Base**
+  - Background: `#0B0F19`
+  - Card: `#0F172A`
+  - Text muted: `#94A3B8`
+- **Accents**
+  - Neon violet: `#8B5CF6` (primary buttons, glow)
+  - Electric cyan: `#22D3EE` (secondary highlights)
+  - Mint: `#34D399` (supported / success)
+  - Amber: `#F59E0B` (unknown / warning)
+  - Red: `#F43F5E` (errors, potential contradictions)
+- **Radiuses**
+  - Cards: `1.25rem`
+  - Chips / pills: full (`9999px`)
+- **Shadows / Glows**
+  - Soft, blurred glows in accent colors on hover/focus.
+  - Used for:
+    - Primary CTAs
+    - Status dots
+    - Toasts
+
+### Typography
+
+- **Inter** (400/600) for UI and body.
+- **JetBrains Mono** for any code-like elements (diff, references).
+- Sizes:
+  - 16px base, 24–32px for headings.
+  - 11–13px for meta labels / chips.
+
+---
+
+## Motion & Micro-interactions
+
+All motion is small, purposeful, implemented with **Framer Motion**.
+
+Guidelines:
 
 - **Durations**
-  - Hover/press: **180–240ms** ease
-  - Enters/exits: **400–600ms**
-- **Easing**
-  - `ease-out` for enters, `ease-in` for exits
-- **Reduced motion**
-  - Always honor `prefers-reduced-motion`: keep opacity fades but remove large translations
-- **Micro-interactions**
-  - Hover: `scale(1.02)` + soft glow
-  - Press: `scale(0.98)`
+  - Hovers / taps: 180–240ms.
+  - Card entrances: 400–600ms.
+- **Patterns**
+  - Subtle upward lift & fade-in for cards on first load.
+  - Scale/opacity pop for toasts.
+  - Smooth scroll for “Back to top”.
+- **Accessibility**
+  - System `prefers-reduced-motion` respected where appropriate.
+  - Motion never blocks interaction.
 
-**Example (Framer Motion)**
-```tsx
-<motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
-  {/* content */}
-</motion.div>
+Examples:
 
+- Claim rows slide/fade into view.
+- Toasts appear top-right with a soft glow.
+- Back-to-top button only appears after scrolling, sits bottom-right.
 
-5) Backgrounds & Effects
+---
 
-Animated Gradient Header
+## Components & Reuse
 
-A soft, moving gradient mesh behind the hero/title.
+A few components define the “AI look” so the rest stays simple:
 
-CSS suggestion
+- `GradientBG`
+  - Full-page gradient mesh with faint particles.
+  - Runs under everything; zero logic.
 
-/* In a global CSS or utility */
-.gradient-anim {
-  background: radial-gradient(1200px 600px at 10% 10%, #8B5CF6 10%, transparent 60%),
-              radial-gradient(1000px 500px at 90% 20%, #22D3EE 10%, transparent 60%),
-              radial-gradient(900px 600px at 30% 80%, #34D399 10%, transparent 60%);
-  filter: blur(40px) saturate(120%);
-  opacity: 0.35;
-  animation: gradientShift 18s ease-in-out infinite alternate;
-}
-@keyframes gradientShift {
-  0% { transform: translate3d(0,0,0) scale(1); }
-  100% { transform: translate3d(0,-10px,0) scale(1.03); }
-}
+- `NavBar`
+  - Logo mark + app name.
+  - Pills for constraints (Zero Cost, Client-Side).
+  - GitHub shortcut.
 
+- `Card`, `Button`, `Badge` (from shadcn-style)
+  - Themed with the color tokens, used everywhere.
+  - Ensures visual consistency across Review/Sources/Report.
 
-Sparkles (very subtle)
+- `Toaster` + `use-toast`
+  - Small internal toast system.
+  - Used for ingest success, errors, embedding status, report actions.
 
-Low-opacity small dots drifting slowly; keep opacity ≤ 0.15.
+Result: **most “wow” comes from 2–3 shared components**, not from sprinkling complex styles everywhere.
 
-6) Components (shadcn/ui mapping)
+---
 
-Buttons
+## UX & Copy Choices
 
-Primary: violet background, white text, glow on focus.
+- Language is **plain and honest**:
+  - “No Backend”, “Zero Cost”, “Client-Side Only”.
+  - Describes what the tool *can* and *cannot* promise.
+- Guidance is inline:
+  - Status text near buttons (e.g., embedding progress).
+  - One primary action visible per section.
+- Error states:
+  - Surface as toasts + short text (e.g., missing embeddings, model load issues).
+  - Prefer helpful explanations over generic “something went wrong”.
 
-Secondary/Outline: transparent/glassy with border.
+---
 
-Danger: error color (for destructive).
+## What This Demonstrates
 
-Badges (chips)
+For anyone skimming this repo:
 
-intent="success" → mint; intent="warn" → amber; intent="error" → rose; intent="info" → cyan.
+- I can define a **visual language** that matches a domain (AI tooling) without overdoing it.
+- I care about:
+  - hierarchy,
+  - legibility,
+  - meaningful motion,
+  - and copy that helps non-experts.
+- I design UI and architecture **together**:
+  - The 3-tab layout mirrors the actual data flow.
+  - The components map directly to concepts in the system.
 
-Always rounded-full and small (text-xs).
-
-Cards
-
-Glassy surface (bg-white/5 on dark), rounded-2xl, thin border, inner padding p-4 md:p-6.
-
-Tabs
-
-High-contrast active state (violet underline or pill), keyboard focus ring (cyan).
-
-Tooltips/Toasts
-
-Brief, non-blocking; max 2 lines.
-
-7) Status & Highlighting
-
-Inline Highlight Legend
-
-Supported: Mint background tint with soft glow.
-
-Unknown: Amber background tint.
-
-Error (future): Rose background tint.
-
-Citations
-
-Render as glowing chips [C#] with rounded-full, px-2 py-0.5, text-xs, subtle cyan glow on hover.
-
-Clicking a chip should scroll + glow the source chunk briefly.
-
-8) Charts (Mini “Factuality Dashboard”)
-
-Keep minimal: a single stacked bar (Mint vs Amber).
-
-Height: 12px–16px, rounded-full, border white/10.
-
-Avoid heavy chart libs; simple <div> bars or lightweight SVG.
-
-9) Accessibility
-
-Keyboard navigation: All interactive elements must be tabbable in a logical order.
-
-Focus styles: visible cyan ring around focused controls.
-
-Tooltips require aria-label or descriptive text.
-
-Color alone must not convey status—use icons/labels where possible.
-
-Respect prefers-reduced-motion.
-
-10) Layout Rules
-
-Page max width: max-w-6xl centered.
-
-Section spacing: vertical rhythm ~ mt-6 mb-6.
-
-Grid: 1-col mobile → 2-col on md: breakpoint.
-
-Padding: Cards p-4 (mobile) → p-6 (md).
-
-<div className="rounded-[1.25rem] bg-white/5 border border-white/10 p-6 shadow-[0_0_12px_rgba(139,92,246,0.0)] hover:shadow-[0_0_12px_rgba(34,211,238,0.25)] transition">
-  {/* content */}
-</div>
-
-11) Intent Colors (Quick Reference)
-
-Primary/Action: Violet #8B5CF6
-
-Focus/Link/Info: Cyan #22D3EE
-
-Success/Supported: Mint #34D399
-
-Warning/Unknown: Amber #F59E0B
-
-Error/Destructive: Rose #F43F5E
-
-12) Do/Don’t
-
-Do
-
-Keep motion subtle; prioritize clarity.
-
-Use chips and badges for compact status.
-
-Maintain consistent paddings and radii.
-
-Don’t
-
-Overuse bright gradients at full opacity.
-
-Use only color for status (add labels/icons).
-
-Add long blocking animations.
+If you want to see exactly how the system fits together technically, see [`architecture.md`](./architecture.md).  
+If you want to see it in action, open the live demo and follow the steps in the main [`README.md`](../README.md).

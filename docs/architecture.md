@@ -1,145 +1,229 @@
-# Architecture — Hallucination Guard
+# Hallucination Guard — Architecture
 
-Zero-cost, client-side verification of LLM answers against local sources.  
-Runs fully in the browser (IndexedDB for storage, optional on-device WebLLM).
+This doc explains **how the app works under the hood** in a way that’s friendly to:
+- engineers reviewing the codebase
+- hiring managers evaluating design & implementation skills
+
+The core idea:
+
+> **Everything runs in the browser.**  
+> We take user sources → build a local vector index → extract claims → retrieve evidence → score + highlight — with no backend.
 
 ---
 
 ## High-Level Flow
 
-User
-│
-▼
-Review UI (paste answer) ───► Claim Extraction (heuristics)
-│
-│ Sources UI (upload/paste)
-│ └─► Chunk (~1000 / 150 overlap)
-│ │
-│ └─► Store in IndexedDB (localForage)
-│ │
-│ ▼
-│ Embeddings (Transformers.js)
-│ │
-│ Vector Store (IndexedDB)
-│ │
-▼ ▼
-Retrieval (cosine top-k + overlap scoring)
-│
-┌─────────────────┴─────────────────┐
-│ │
-Evidence Panel Inline Highlighter
-(per-claim top chunks) (supported/unknown spans + [C#] chips)
-│ │
-└─────────────────┬─────────────────┘
-▼
-Fix Draft
-(WebLLM if available; else template)
-│
-▼
-Report
-(JSON + Markdown + rough diff preview)
+### 1. Ingest
 
+**User actions**
+
+- Upload PDF(s), or
+- Paste text / Markdown.
+
+**What happens**
+
+1. PDFs are parsed client-side via **pdf.js**.
+2. Raw text is passed into `chunkText.ts`.
+3. `chunkText.ts` splits into overlapping chunks (~800–1000 chars, 150 overlap).
+4. `storage.ts` saves:
+   - a `DocRecord` (id, title, sourceType, createdAt, size)
+   - its chunks `{ docId, idx, text, start, end }`
+5. Data is persisted in **IndexedDB** via `localForage`.
+
+**Why this matters**
+
+- Respect data privacy: no upload to any server.
+- Creates a consistent structure for retrieval.
 
 ---
 
-## Modules (where the logic lives)
+### 2. Embeddings & Vector Store
 
-- **`src/lib/pdf.ts`** — Wraps **pdf.js** to parse PDFs client-side with a progress callback.
-- **`src/lib/chunkText.ts`** — Splits text into ~1000-char chunks with ~150 overlap (configurable).
-- **`src/lib/embeddings.ts`** — Loads a tiny **Transformers.js** text-embedding model, exposes:
-  - `loadEmbedder(onProgress?)`, `embedText(text)`, `embedMany(texts, onBatchProgress?)`.
-- **`src/lib/vectorStore.ts`** — IndexedDB (via **localForage**) for:
-  - saving chunk vectors and metadata, fetching by `docId`, cosine `topK`.
-- **`src/lib/claims.ts`** — Heuristic claim extraction (dates, numbers, entities, quoted titles, simple NPs).
-- **`src/lib/retrieval.ts`** — Given a claim:
-  - embed claim → cosine top-k over selected doc → compute token/keyword overlap → status (`supported`/`unknown`) + evidence list.
-- **`src/lib/highlight.ts`** — Maps claim spans to inline highlights (green = supported, amber = unknown) + clickable citation chips `[C#]`.
-- **`src/lib/fix.ts`** — Grounded rewrite:
-  - try **WebLLM** (small model) if available; fallback to template replacement using retrieved snippets.
-- **`src/lib/report.ts`** — Builds **Report JSON** + **Markdown** (claim table, refs, summaries).
-- **`src/lib/diff.ts`** — Very rough sentence-level diff for “Before/After”.
+**User actions**
 
-UI composition (selected):
-- **`src/components/PageShell.tsx`** — Tabs (Review / Sources / Report) and orchestration.
-- **`src/components/ClaimList.tsx`** — Per-claim status + “View evidence”.
-- **`src/components/AnswerHighlighter.tsx`** — Inline spans + citation chips.
-- **`src/components/FixDraft.tsx`** — Draft generator (WebLLM toggle + template fallback).
-- **`src/components/ReportView.tsx`** — Claim table, dashboard bar, diff, refs, copy/download.
+- Select a document.
+- Click **“Compute Embeddings”**.
+
+**What happens**
+
+1. `embeddings.ts`:
+   - loads a tiny **Transformers.js** model (MiniLM-style) in the browser,
+   - exposes `embedMany(texts)` and `embedText(text)`.
+
+2. `vectorStore.ts`:
+   - stores vectors next to chunk metadata in IndexedDB:
+     ```ts
+     {
+       docId,
+       idx,
+       text,
+       vector: Float32Array | number[]
+     }
+     ```
+   - provides:
+     - `saveVectors(docId, chunks, vectors)`
+     - `getVectorsByDocId(docId)`
+     - `hasVectorsForDoc(docId)`
+     - `deleteVectorsForDoc(docId)`
+
+**Why this matters**
+
+- Demonstrates **on-device retrieval**: no OpenAI / no cloud embedding service.
+- Clean separation between:
+  - “how we embed” and
+  - “how/where we store vectors”.
 
 ---
 
-## Data Model (simplified)
+### 3. Claim Extraction
 
-```ts
-// Document metadata
-type DocRecord = {
-  id: string;                 // "doc_xxx"
-  title: string;              // file name or pasted title
-  sourceType: "pdf" | "pasted";
-  createdAt: number;          // Date.now()
-  bytes: number;              // approximate size
-};
+**User actions**
 
-// Chunked text
-type Chunk = {
-  docId: string;              // foreign key to DocRecord.id
-  idx: number;                // 0..N-1
-  start: number;              // char start offset (original text)
-  end: number;                // char end offset
-  text: string;               // chunk content
-};
+- Paste an LLM answer in **Review**.
+- Click **“Extract Claims”**.
 
-// Vector store record
-type VectorRecord = {
-  docId: string;
-  idx: number;                // matches Chunk.idx
-  text: string;               // duplicated for convenient previews
-  vector: Float32Array;       // embedding
-};
+**What happens**
 
+1. `claims.ts` scans the answer and emits `Claim` objects:
+   - Uses regex + simple heuristics to detect:
+     - dates (e.g. “February 2023”),
+     - numbers,
+     - named entities / capitalized spans,
+     - quoted titles/snippets.
+   - Keeps enough text to be meaningful (phrase-level, not single-word if possible).
+2. Claims are displayed in `ClaimList` and highlighted in `AnswerHighlighter`.
 
-All persisted in IndexedDB via localForage.
+**Why this matters**
 
-Retrieval & Scoring (simple & fast)
+- Shows ability to implement **lightweight NLP** without heavy models.
+- Keeps implementation transparent & editable for users.
 
-Embed claim text (Transformers.js tiny model).
+---
 
-Cosine top-k over vectors for the selected document.
+### 4. Evidence Retrieval & Scoring
 
-Overlap heuristic (normalized keyword/NP overlap) to decide:
+**User actions**
 
-supported (above threshold) vs unknown (below threshold).
+- For a given claim, click **“View evidence”**.
 
-Store per-claim evidence list (top chunks + scores) in memory (not persisted by default).
+**What happens**
 
-This is intentionally lightweight to run on typical laptops without a backend.
+1. `retrieval.ts`:
+   - Calls `embedText(claim.text)` to get a query vector.
+   - Fetches all vectors for the selected doc via `vectorStore.ts`.
+   - Computes cosine similarity and takes top-k candidates.
+   - For each candidate, calls `scoreEvidence` from `scoring.ts`.
 
-Fix Draft Strategy
+2. `scoring.ts`:
+   - Normalizes tokens & removes stopwords.
+   - Computes lexical overlap between claim & chunk.
+   - Extracts months/years from both sides.
+   - Heuristics:
+     - If strong overlap **and** dates align → `supported`.
+     - If strong overlap but months/years clearly disagree (e.g. February vs March) → `contradiction`.
+     - Otherwise → `unknown`.
 
-Try WebLLM (small model) if the browser supports WebGPU and assets load.
+3. `retrieveEvidenceForClaim` aggregates:
+   - a list of `EvidenceItem`:
+     ```ts
+     {
+       idx,
+       text,
+       score,    // cosine similarity
+       overlap,  // lexical support
+       label     // supported | contradiction | unknown
+     }
+     ```
+   - an overall claim status for the UI:
+     - `supported` if we saw good support and no contradiction.
+     - `unknown` if conflicting or weak.
 
-If not available, use a template-based rewrite:
+**Why this matters**
 
-Keep supported statements as-is (plus citations).
+- Shows understanding of **retrieval-augmented verification**.
+- Explicitly encodes **safety: contradictions never marked as supported**.
+- All logic is readable TypeScript — no black box.
 
-Replace unknown spans with inlined quotations from top evidence chunks or mark with TODO where evidence is ambiguous.
+---
 
-Privacy & Offline
+### 5. Highlighting & UX
 
-No servers. No paid APIs.
+**Components**
 
-All sources, vectors, and app state live in IndexedDB.
+- `PageShell.tsx`
+  - Orchestrates state across tabs.
+  - Connects ingest, embeddings, claims, evidence, and reports.
+- `AnswerHighlighter.tsx`
+  - Uses claim spans + status to highlight:
+    - supported → green glass.
+    - unknown → amber.
+  - Clickable citation chips can jump to chunks.
+- `ClaimList.tsx`
+  - Shows per-claim status + type (DATE / NUMBER / ENTITY / QUOTED).
+- `FixDraft.tsx`
+  - Builds a grounded revision:
+    - If a small on-device model is available, can be plugged in.
+    - Otherwise uses a conservative template-based rewrite.
+- `ReportView.tsx`
+  - Renders:
+    - claim table,
+    - factuality bar,
+    - rough diff,
+    - Markdown + JSON export.
 
-Clear local data wipes everything.
+**Why this matters**
 
-WebLLM (optional) downloads small weights to the browser cache only.
+- Demonstrates **component architecture**, not a monolith.
+- Clear separation between logic (`lib/`) and UI (`components/`).
 
-Error Handling (typical cases)
+---
 
-PDF parse error → show toast + keep app usable; paste-text path still works.
+## Visual & Interaction Stack
 
-Embedding model fetch blocked → show progress message; app still functions (you can highlight via claim heuristics and template fix).
+- **React + Vite + TypeScript** — fast local dev, static build for GitHub Pages.
+- **Tailwind CSS** — design tokens for dark AI theme.
+- **shadcn/ui** — composable primitives (Button, Card, Tabs, Dialog, etc.).
+- **Framer Motion** — micro-animations (card entrance, hover, toasts).
+- **lucide-react** — crisp iconography.
+- **localForage + IndexedDB** — async, persistent storage layer.
 
-Quota exceeded → prompt to clear data or ingest fewer pages.
+The aesthetic choices (gradient mesh, glass cards, neon accents) are implemented in a small number of shared components (`GradientBG`, `NavBar`, layout wrappers) so the rest of the app stays clean.
 
-GitHub Pages base path misconfigured → 404s on assets; fix vite.config.ts: base.
+---
+
+## Deployment Architecture
+
+- Static build via `vite build`.
+- **GitHub Actions** workflow:
+  - on push to `main`:
+    - install deps,
+    - run TypeScript build,
+    - deploy `dist` to `gh-pages`.
+- Hosted on **GitHub Pages**. No runtime server cost.
+
+**Why this matters**
+
+- Shows comfort with **CI/CD** and “zero-cost” hosting.
+- Reinforces the privacy story: the deployed artifact is just static files.
+
+---
+
+## Design Principles (what this says about my approach)
+
+1. **Client-first & privacy-first**
+   - Everything critical runs locally; easy to reason about data flow.
+
+2. **Explainability**
+   - Visible chunks, scores, and citations instead of magic “truth scores”.
+
+3. **Modularity**
+   - `lib/` for logic, `components/` for UI — easy to swap models or scoring.
+
+4. **Realistic constraints**
+   - No assumption of expensive infra or secret keys.
+   - Targets a normal laptop browser.
+
+5. **Recruiter-readable**
+   - The codebase is documented, typed, and intentionally approachable.
+
+If you’d like a deeper dive into styling and motion decisions, see [`docs/design.md`](./design.md).
